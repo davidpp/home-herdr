@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test";
-import { parseWebArgs, rejectExtraForwardings, sshArgs } from "../web";
+import { hasBothLoopbackListeners, parseWebArgs, rejectExtraForwardings, sshArgs } from "../web";
 import { join } from "node:path";
 
 test("named previews default to the same local port", () => {
   expect(parseWebArgs(["preview", "3000"])).toEqual({
-    remotePort: 3000, localPort: 3000, check: false, open: true, url: "http://preview.localhost:3000",
+    remotePort: 3000, localPort: 3000, fixedLocalPort: false, check: false, open: true, url: "http://preview.localhost:3000",
   });
+});
+
+test("explicit local ports are fixed rather than silently replaced", () => {
+  expect(parseWebArgs(["preview", "3000", "--local-port", "13000"])?.fixedLocalPort).toBe(true);
 });
 
 test("supports a separate local port and HTTPS without TLS termination", () => {
@@ -23,6 +27,7 @@ test("rejects invalid names, ports, and extra targets", () => {
 test("only requests a loopback local forward, with no agent/X11 forwarding or connection reuse", () => {
   const args = sshArgs(3000, 13000);
   expect(args).toContain("127.0.0.1:13000:127.0.0.1:3000");
+  expect(args).toContain("[::1]:13000:127.0.0.1:3000");
   expect(args).toContain("ForwardAgent=no");
   expect(args).toContain("ForwardX11=no");
   expect(args).toContain("StrictHostKeyChecking=yes");
@@ -30,6 +35,13 @@ test("only requests a loopback local forward, with no agent/X11 forwarding or co
   expect(args).toContain("GatewayPorts=no");
   expect(args).not.toContain("-R");
   expect(args).not.toContain("-D");
+});
+
+test("readiness requires both loopback listeners owned by the tunnel", () => {
+  expect(hasBothLoopbackListeners("p10\nn127.0.0.1:13000\n", 13000)).toBe(false);
+  expect(hasBothLoopbackListeners("p10\nn[::1]:13000\n", 13000)).toBe(false);
+  expect(hasBothLoopbackListeners("p10\nn*:13000\n", 13000)).toBe(false);
+  expect(hasBothLoopbackListeners("p10\nn127.0.0.1:13000\nn[::1]:13000\n", 13000)).toBe(true);
 });
 
 test("rejects inherited forwardings before overriding ClearAllForwardings", () => {

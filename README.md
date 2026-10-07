@@ -159,13 +159,13 @@ home-herdr remote
 
 ```fish
 home-herdr web preview 3000
-# Opens http://preview.localhost:3000
+# Opens preview.localhost, using port 3000 if free or choosing a free local port
 
 home-herdr web docs 3000 --local-port 13000
 # Opens http://docs.localhost:13000 if local port 3000 is already occupied
 ```
 
-The command opens a foreground SSH local forward: **local 127.0.0.1 → SSH over
+The command opens plain SSH local forwards: **local 127.0.0.1 / ::1 → SSH over
 Tailscale → remote 127.0.0.1**. The website can remain bound to loopback on the
 remote Mac; only its SSH port needs tailnet access. Names use the `.localhost`
 namespace, so no DNS server, `/etc/hosts` edit, or administrator access is needed.
@@ -176,11 +176,17 @@ started by this command is cleaned up, while one already running is preserved.
 Use `--no-open` to print the URL without launching a browser, or `--https` for
 an HTTPS backend. TLS is passed through, not terminated or automatically trusted.
 
-Local ports must be 1024–65535. A busy port fails rather than redirecting you to
-an unrelated local website. No remote/reverse forwarding is requested, and agent
-and X11 forwarding remain disabled. This one SSH connection overrides the host's
-`ClearAllForwardings` only for its explicit local forward; inherited forwarding
-settings are rejected. Your persisted SSH config is unchanged.
+Local ports must be 1024–65535. If the default local port is occupied on either
+address family, the helper chooses a free one and prints/opens its URL. An
+explicit `--local-port` is never changed silently: a collision fails. Both
+IPv4 and IPv6 loopback listeners must belong to SSH before opening the browser,
+so `.localhost` cannot select a different local project via IPv6.
+
+No remote/reverse forwarding is requested, and agent and X11 forwarding remain
+disabled. This SSH connection overrides the host's `ClearAllForwardings` only
+for its two explicit loopback bindings; inherited forwards are rejected. Your
+persisted SSH config is unchanged. The URL is available only while the tunnel
+runs; the remote Mac must actually have a server on the requested remote port.
 
 HTTP headers, URLs, and WebSockets pass through unchanged. If a dev server
 rejects `preview.localhost`, explicitly allow that name in its host/origin
@@ -355,7 +361,8 @@ names through SOCKS5 rather than resolving locally.
 
 A named web preview was also exercised through `home-herdr web` with a temporary
 HTTP server bound only to the remote Mac's loopback. A browser rendered the exact
-fixture at `preview.localhost`; closing the test left the shared proxy intact.
+fixture at `preview.localhost`; IPv4/IPv6 routing and fallback from an occupied
+local port were checked separately. Closing the test left the shared proxy intact.
 The fixture and test tunnel were removed afterward.
 
 Remote-to-proxy denial still requires verification in your own tailnet.

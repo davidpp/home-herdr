@@ -23,8 +23,9 @@ export function parseWebArgs(args: string[]) {
     return Number(value);
   };
   const remotePort = port(remote!, 1);
-  const localPort = port(values["local-port"] || remote!, 1024);
-  return { remotePort, localPort, check: !!values.check, open: !values["no-open"],
+  const localPort = port(values["local-port"] ?? remote!, 1024);
+  return { remotePort, localPort, fixedLocalPort: values["local-port"] !== undefined,
+    check: !!values.check, open: !values["no-open"],
     url: `${values.https ? "https" : "http"}://${name}.localhost:${localPort}` };
 }
 
@@ -35,11 +36,38 @@ const sshOptions = [
 ].flatMap(option => ["-o", option]);
 
 export function sshArgs(remotePort: number, localPort: number) {
-  return ["ssh", "-N", "-T", ...sshOptions, "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`, "home-herdr"];
+  return ["ssh", "-N", "-T", ...sshOptions,
+    "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
+    "-L", `[::1]:${localPort}:127.0.0.1:${remotePort}`, "home-herdr"];
+}
+
+export function hasBothLoopbackListeners(fields: string, port: number) {
+  const names = new Set(fields.split("\n").filter(line => line.startsWith("n")));
+  return names.has(`n127.0.0.1:${port}`) && names.has(`n[::1]:${port}`);
+}
+
+function portOccupied(port: number) {
+  // Address-specific lsof filters omit wildcard listeners. Check the whole port
+  // across both families so we neither shadow a work app nor display it by mistake.
+  const existing = Bun.spawnSync(["/usr/sbin/lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN"],
+    { stdout: "pipe", stderr: "pipe" });
+  if (existing.success) return true;
+  if (existing.exitCode !== 1) throw new Error(existing.stderr.toString().trim() || "Could not check the local port.");
+  return false;
+}
+
+function chooseFreePort() {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const port = probe.port;
+    probe.stop(true);
+    if (!portOccupied(port)) return port;
+  }
+  throw new Error("Could not find an unused local port.");
 }
 
 export function rejectExtraForwardings(config: string) {
-  // The web connection overrides ClearAllForwardings for its one -L. Reject
+  // The web connection overrides ClearAllForwardings for its loopback -L bindings. Reject
   // inherited forwards rather than accidentally enabling a reverse tunnel.
   if (/^(localforward|remoteforward|dynamicforward)\s/im.test(config)) {
     throw new Error("Remove inherited LocalForward/RemoteForward/DynamicForward settings from home-herdr before using web previews.");
@@ -52,10 +80,20 @@ async function main() {
     console.log("home-herdr web NAME REMOTE_PORT [--local-port PORT] [--no-open] [--https]\n\nOpen a named, loopback-only preview of a remote localhost website. Ctrl-C closes the tunnel.");
     return;
   }
+  const occupied = portOccupied(preview.localPort);
+  if (occupied && preview.fixedLocalPort) {
+    throw new Error(`Local port ${preview.localPort} is occupied. Choose another with --local-port PORT.`);
+  }
   const config = Bun.spawnSync(["ssh", "-G", ...sshOptions, "home-herdr"], { stdout: "pipe", stderr: "pipe" });
   if (!config.success) throw new Error(config.stderr.toString().trim());
   rejectExtraForwardings(config.stdout.toString());
   if (preview.check) return;
+  if (occupied) {
+    const requestedPort = preview.localPort;
+    preview.localPort = chooseFreePort();
+    preview.url = preview.url.replace(/:\d+$/, `:${preview.localPort}`);
+    console.log(`Local port ${requestedPort} is occupied; using ${preview.localPort}.`);
+  }
 
   const ssh = Bun.spawn(sshArgs(preview.remotePort, preview.localPort), {
     stdin: "inherit", stdout: "inherit", stderr: "inherit",
@@ -67,11 +105,14 @@ async function main() {
   try {
     let listening = false;
     for (let attempt = 0; attempt < 600 && ssh.exitCode === null && !stopping; attempt++) {
-      // Check this SSH process owns the listener before opening a browser; an
-      // unrelated service already on that port must never be mistaken for it.
+      // .localhost can resolve to either loopback family. Both must belong to
+      // this SSH process before a named URL can safely identify the remote site.
       const listener = Bun.spawnSync(["/usr/sbin/lsof", "-nP", "-a", "-p", String(ssh.pid),
-        "-iTCP@127.0.0.1:" + preview.localPort, "-sTCP:LISTEN"], { stdout: "ignore", stderr: "ignore" });
-      if (listener.success) { listening = true; break; }
+        `-iTCP:${preview.localPort}`, "-sTCP:LISTEN", "-Fn"], { stdout: "pipe", stderr: "ignore" });
+      if (listener.success && hasBothLoopbackListeners(listener.stdout.toString(), preview.localPort)) {
+        listening = true;
+        break;
+      }
       await Bun.sleep(200);
     }
     if (stopping) return;
