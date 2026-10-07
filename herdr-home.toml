@@ -1,0 +1,28 @@
+# Local presentation for a remote-only home attach.
+onboarding = false
+
+[theme]
+name = "rose-pine"
+
+[theme.custom]
+panel_bg = "reset"
+sidebar_bg = "#1f1d2e"
+accent = "#c4a7e7"
+text = "#e0def4"
+
+[ui]
+accent = "#c4a7e7"
+agent_panel_sort = "priority"
+show_agent_labels_on_pane_borders = true
+sidebar_width = 40
+sidebar_min_width = 40
+sidebar_max_width = 48
+
+[keys]
+# Preserve Ghostty's Cmd shortcuts, which send this prefix.
+prefix = "ctrl+space"
+# Avoid accidental clipboard-image transfers into the home session.
+remote_image_paste = ""
+
+[ui.toast]
+delivery = "herdr"

@@ -1,0 +1,15 @@
+# Copy this block into ~/.ssh/config, before broader Host * rules.
+# Replace HostName, User and IdentityFile. HostName can be a Tailscale
+# MagicDNS name or IPv4 address; SOCKS5 passes the name to the proxy.
+Host home-herdr
+    HostName home-mac
+    User REPLACE_HOME_USERNAME
+    IdentityFile ~/.ssh/REPLACE_HOME_KEY
+    IdentitiesOnly yes
+    ProxyCommand /usr/bin/nc -X 5 -x 127.0.0.1:1055 %h %p
+    ForwardAgent no
+    ForwardX11 no
+    ForwardX11Trusted no
+    ClearAllForwardings yes
+    PermitLocalCommand no
+    StrictHostKeyChecking yes

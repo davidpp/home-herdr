@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+config.json
+*.local.*
+*.log
+*.bak
+*.backup*
+*.pub
+*.pem
+*.key
+id_*
+tailscaled.state*
+state/

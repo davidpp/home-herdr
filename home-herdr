@@ -1,0 +1,165 @@
+#!/bin/bash
+set -euo pipefail
+# GUI launches may not inherit Homebrew's PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SSH_HOST=home-herdr
+
+compose() {
+  docker compose --project-directory "$PROJECT_DIR" -f "$PROJECT_DIR/compose.yaml" "$@"
+}
+
+ts() {
+  compose exec -T proxy /usr/local/bin/tailscale --socket=/run/tailscaled.sock "$@"
+}
+
+start() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "Starting Docker Desktop…"
+    open -a Docker
+    local ready=false
+    for ((i=0; i<120; i++)); do
+      if docker info >/dev/null 2>&1; then
+        ready=true
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$ready" != true ]]; then
+      echo "Docker did not become ready. Open Docker Desktop and retry." >&2
+      return 1
+    fi
+  fi
+  compose up -d --build
+  for ((i=0; i<30; i++)); do
+    if ts debug prefs >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Tailscale daemon did not become ready; inspect docker compose logs." >&2
+  return 1
+}
+
+require_login() {
+  local state
+  echo "Waiting for Tailscale to reconnect…"
+  for ((i=0; i<60; i++)); do
+    if state="$(ts status --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState", ""))')"; then
+      case "$state" in
+        Running)
+          ts set --shields-up --accept-dns=false --accept-routes=false --ssh=false
+          return 0
+          ;;
+        NeedsLogin|Stopped)
+          echo "Proxy needs login. Run: home-herdr login" >&2
+          return 1
+          ;;
+        NeedsMachineAuth)
+          echo "Approve the proxy device in your Tailscale admin console." >&2
+          return 1
+          ;;
+      esac
+    fi
+    sleep 1
+  done
+  echo "Tailscale did not become ready within 60 seconds." >&2
+  ts status >&2 || true
+  return 1
+}
+
+wait_for_ssh() {
+  local host port
+  host="$(ssh -G "$SSH_HOST" 2>/dev/null | awk '$1 == "hostname" {print $2}')"
+  port="$(ssh -G "$SSH_HOST" 2>/dev/null | awk '$1 == "port" {print $2}')"
+  echo "Waiting for the remote SSH port through the proxy…"
+  for ((i=0; i<10; i++)); do
+    if /usr/bin/nc -z -w 3 -X 5 -x 127.0.0.1:1055 "$host" "$port" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Remote SSH port is unreachable. Check home-herdr config, MagicDNS, and tailnet policy." >&2
+  return 1
+}
+
+stop() {
+  compose down
+}
+
+cleanup() {
+  local result=$?
+  trap - EXIT
+  stop || echo "Could not stop the proxy; run home-herdr stop." >&2
+  exit "$result"
+}
+
+case "${1:-run}" in
+  config)
+    python3 "$PROJECT_DIR/configure.py" "${@:2}"
+    ;;
+  window)
+    open -na /Applications/Ghostty.app --args \
+      --config-file="$PROJECT_DIR/ghostty-home.conf" \
+      --command="/bin/bash \"$PROJECT_DIR/home-herdr\" remote"
+    ;;
+  run|remote)
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    start
+    require_login
+    if [[ "${1:-run}" == remote ]]; then
+      wait_for_ssh
+      HERDR_CONFIG_PATH="$PROJECT_DIR/herdr-home.toml" herdr --remote "$SSH_HOST"
+    else
+      herdr
+    fi
+    ;;
+  start)
+    start
+    require_login
+    ;;
+  stop)
+    stop
+    ;;
+  login)
+    start
+    # Interactive browser login; no auth key is stored in the project.
+    ts up --hostname=work-outbound-proxy --shields-up \
+      --accept-dns=false --accept-routes=false --ssh=false
+    ;;
+  setup)
+    start
+    require_login
+    wait_for_ssh
+    # Herdr discovers sessions and asks before remote installation/replacement.
+    herdr machine add "$SSH_HOST" --label Home
+    ;;
+  status)
+    compose ps
+    ts status
+    ;;
+  logs)
+    compose logs --tail=50 proxy
+    ;;
+  help|-h|--help)
+    printf '%s\n' \
+      'home-herdr          Start proxy, open local Herdr, stop proxy on detach' \
+      'home-herdr window   Open a separate, purple, home-only Ghostty window' \
+      'home-herdr remote   Attach home-only here; stop proxy on detach' \
+      'home-herdr config   Configure SSH using a selected 1Password key' \
+      'home-herdr login    Start proxy and authenticate Tailscale (one-time)' \
+      'home-herdr setup    Save home-herdr SSH target as Home (one-time)' \
+      'home-herdr start    Start proxy without opening Herdr' \
+      'home-herdr stop     Stop proxy; keep identity and home sessions' \
+      'home-herdr status   Show proxy/container status' \
+      'home-herdr logs     Show recent proxy logs (may contain private metadata)'
+    ;;
+  *)
+    echo "Unknown command: $1. Run home-herdr --help." >&2
+    exit 2
+    ;;
+esac

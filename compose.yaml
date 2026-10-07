@@ -1,0 +1,31 @@
+services:
+  proxy:
+    build: .
+    image: local/tailnet-outbound-proxy
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:1055:1055"
+    volumes:
+      - tailscale-state:/state
+    tmpfs:
+      - /run:uid=65532,gid=65532,mode=0700
+      - /tmp:mode=1777
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/tailscale", "--socket=/run/tailscaled.sock", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  tailscale-state:
