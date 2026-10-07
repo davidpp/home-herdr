@@ -143,6 +143,23 @@ case "${1:-window}" in
       herdr
     fi
     ;;
+  web)
+    for argument in "${@:2}"; do
+      if [[ "$argument" == --help || "$argument" == -h ]]; then
+        bun "$PROJECT_DIR/web.ts" --help
+        exit 0
+      fi
+    done
+    bun "$PROJECT_DIR/web.ts" --check "${@:2}"
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    start
+    require_login
+    wait_for_ssh
+    bun "$PROJECT_DIR/web.ts" "${@:2}"
+    ;;
   start)
     start
     require_login
@@ -189,7 +206,8 @@ case "${1:-window}" in
       'home-herdr          Open or focus the dedicated Home window' \
       'home-herdr window   Same as home-herdr; no duplicate windows' \
       'home-herdr remote   Attach home-only in this plain terminal' \
-      'home-herdr run      Open local Herdr with the shared Home sidebar'  \
+      'home-herdr run      Open local Herdr with the shared Home sidebar' \
+      'home-herdr web NAME PORT   Open a named preview of a home localhost website' \
       'home-herdr config   Configure SSH using a selected 1Password key' \
       'home-herdr login    Start proxy and authenticate Tailscale (one-time)' \
       'home-herdr setup    Save home-herdr SSH target as Home (one-time)' \

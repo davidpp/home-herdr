@@ -155,6 +155,44 @@ To attach in the current terminal:
 home-herdr remote
 ```
 
+### Named website previews
+
+```fish
+home-herdr web preview 3000
+# Opens http://preview.localhost:3000
+
+home-herdr web docs 3000 --local-port 13000
+# Opens http://docs.localhost:13000 if local port 3000 is already occupied
+```
+
+The command opens a foreground SSH local forward: **local 127.0.0.1 → SSH over
+Tailscale → remote 127.0.0.1**. The website can remain bound to loopback on the
+remote Mac; only its SSH port needs tailnet access. Names use the `.localhost`
+namespace, so no DNS server, `/etc/hosts` edit, or administrator access is needed.
+This is a named local URL with a port, not a shared hostname router on port 80.
+
+Use Ctrl-C to close the tunnel. The same proxy ownership rules apply: a proxy
+started by this command is cleaned up, while one already running is preserved.
+Use `--no-open` to print the URL without launching a browser, or `--https` for
+an HTTPS backend. TLS is passed through, not terminated or automatically trusted.
+
+Local ports must be 1024–65535. A busy port fails rather than redirecting you to
+an unrelated local website. No remote/reverse forwarding is requested, and agent
+and X11 forwarding remain disabled. This one SSH connection overrides the host's
+`ClearAllForwardings` only for its explicit local forward; inherited forwarding
+settings are rejected. Your persisted SSH config is unchanged.
+
+HTTP headers, URLs, and WebSockets pass through unchanged. If a dev server
+rejects `preview.localhost`, explicitly allow that name in its host/origin
+settings. Apps that hardcode localhost URLs or HMR ports may need their public
+URL configured, or the same local/remote port.
+
+Remote HTML/JavaScript runs in your local browser and can attempt requests to
+other local/LAN services, subject to browser policy. The tunnel does not isolate
+that code. A separate profile isolates cookies/storage, not network access. For
+a strict compromised-remote-machine boundary, use a browser in a network-isolated
+VM/sandbox rather than assuming outbound SSH alone protects local web services.
+
 Other commands:
 
 | Command | Behavior |
@@ -166,6 +204,7 @@ Other commands:
 | `home-herdr stop` | Stop proxy, preserving its identity |
 | `home-herdr status` | Show Home window and proxy state, including when stopped |
 | `home-herdr build` | Explicitly rebuild the proxy image |
+| `home-herdr web NAME PORT` | Open a named preview of a remote loopback website |
 | `home-herdr logs` | Show recent container logs |
 | `home-herdr config` | Configure SSH and select a 1Password key |
 | `home-herdr login` | Authenticate/re-authenticate the proxy |
@@ -250,7 +289,9 @@ Limitations:
 - No automatic upgrades. Update `TAILSCALE_VERSION`, rebuild, and repeat checks.
 
 Do not enable reverse forwarding, agent forwarding, route advertisement,
-Tailscale SSH, Serve, or Funnel on the proxy. Do not put local/work credentials
+Tailscale SSH, Serve, or Funnel on the proxy. Local website previews are a
+separate, explicitly requested local forward; they do not expose a local service
+to the remote peer. Do not put local/work credentials
 or a connection back to the local machine on the remote server.
 
 ### Verify the boundary
@@ -311,6 +352,11 @@ already-running proxy is reused without a rebuild. Authenticated remote Herdr
 attachment and the separate normal fish window were verified visually. Startup
 failure output was also checked to stay visible. macOS `nc` sends destination
 names through SOCKS5 rather than resolving locally.
+
+A named web preview was also exercised through `home-herdr web` with a temporary
+HTTP server bound only to the remote Mac's loopback. A browser rendered the exact
+fixture at `preview.localhost`; closing the test left the shared proxy intact.
+The fixture and test tunnel were removed afterward.
 
 Remote-to-proxy denial still requires verification in your own tailnet.
 
