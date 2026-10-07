@@ -5,6 +5,8 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SSH_HOST=home-herdr
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/home-herdr"
+STARTED_PROXY=false
 
 compose() {
   docker compose --project-directory "$PROJECT_DIR" -f "$PROJECT_DIR/compose.yaml" "$@"
@@ -14,7 +16,7 @@ ts() {
   compose exec -T proxy /usr/local/bin/tailscale --socket=/run/tailscaled.sock "$@"
 }
 
-start() {
+ensure_docker() {
   if ! docker info >/dev/null 2>&1; then
     echo "Starting Docker Desktop…"
     open -a Docker
@@ -31,7 +33,20 @@ start() {
       return 1
     fi
   fi
-  compose up -d --build
+}
+
+start() {
+  ensure_docker
+  if [[ -n "$(compose ps --status running -q proxy)" ]]; then
+    echo "Proxy already running."
+  else
+    if ! docker image inspect local/tailnet-outbound-proxy >/dev/null 2>&1; then
+      echo "Building the proxy image (first run)…"
+      compose build
+    fi
+    STARTED_PROXY=true
+    compose up -d --no-build
+  fi
   for ((i=0; i<30; i++)); do
     if ts debug prefs >/dev/null 2>&1; then
       return 0
@@ -46,7 +61,7 @@ require_login() {
   local state
   echo "Waiting for Tailscale to reconnect…"
   for ((i=0; i<60; i++)); do
-    if state="$(ts status --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState", ""))')"; then
+    if state="$(ts status --json | bun -e 'console.log(JSON.parse(await Bun.stdin.text()).BackendState ?? "")')"; then
       case "$state" in
         Running)
           ts set --shields-up --accept-dns=false --accept-routes=false --ssh=false
@@ -91,27 +106,37 @@ stop() {
 cleanup() {
   local result=$?
   trap - EXIT
-  stop || echo "Could not stop the proxy; run home-herdr stop." >&2
+  if [[ "$STARTED_PROXY" == true ]]; then
+    stop || echo "Could not stop the proxy; run home-herdr stop." >&2
+  else
+    echo "Proxy left running (started separately)."
+  fi
   exit "$result"
 }
 
-case "${1:-run}" in
+case "${1:-window}" in
   config)
-    python3 "$PROJECT_DIR/configure.py" "${@:2}"
+    bun "$PROJECT_DIR/configure.ts" "${@:2}"
     ;;
   window)
-    open -na /Applications/Ghostty.app --args \
-      --config-file="$PROJECT_DIR/ghostty-home.conf" \
-      --command="/bin/bash \"$PROJECT_DIR/home-herdr\" remote"
+    (
+      umask 077
+      mkdir -p "$CONFIG_DIR"
+      /usr/bin/lockf -k "$CONFIG_DIR/window.lock" bun "$PROJECT_DIR/window.ts"
+    )
     ;;
   run|remote)
+    if [[ "${HERDR_ENV:-}" == 1 ]]; then
+      echo "You're in a Herdr pane. Use home-herdr to open a separate Home window; inline attach requires a plain terminal." >&2
+      exit 1
+    fi
     trap cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
     start
     require_login
-    if [[ "${1:-run}" == remote ]]; then
+    if [[ "$1" == remote ]]; then
       wait_for_ssh
       HERDR_CONFIG_PATH="$PROJECT_DIR/herdr-home.toml" herdr --remote "$SSH_HOST"
     else
@@ -123,7 +148,15 @@ case "${1:-run}" in
     require_login
     ;;
   stop)
-    stop
+    if docker info >/dev/null 2>&1; then
+      stop
+    else
+      echo "Proxy stopped (Docker is not running)."
+    fi
+    ;;
+  build)
+    ensure_docker
+    compose build
     ;;
   login)
     start
@@ -139,23 +172,31 @@ case "${1:-run}" in
     herdr machine add "$SSH_HOST" --label Home
     ;;
   status)
-    compose ps
-    ts status
+    bun "$PROJECT_DIR/window.ts" --status
+    if ! docker info >/dev/null 2>&1; then
+      echo "Proxy: stopped (Docker is not running)"
+    elif [[ -z "$(compose ps --status running -q proxy)" ]]; then
+      echo "Proxy: stopped"
+    else
+      ts status --json | bun -e 'console.log("Proxy: " + (JSON.parse(await Bun.stdin.text()).BackendState ?? "unknown"))'
+    fi
     ;;
   logs)
     compose logs --tail=50 proxy
     ;;
   help|-h|--help)
     printf '%s\n' \
-      'home-herdr          Start proxy, open local Herdr, stop proxy on detach' \
-      'home-herdr window   Open a separate, purple, home-only Ghostty window' \
-      'home-herdr remote   Attach home-only here; stop proxy on detach' \
+      'home-herdr          Open or focus the dedicated Home window' \
+      'home-herdr window   Same as home-herdr; no duplicate windows' \
+      'home-herdr remote   Attach home-only in this plain terminal' \
+      'home-herdr run      Open local Herdr with the shared Home sidebar'  \
       'home-herdr config   Configure SSH using a selected 1Password key' \
       'home-herdr login    Start proxy and authenticate Tailscale (one-time)' \
       'home-herdr setup    Save home-herdr SSH target as Home (one-time)' \
-      'home-herdr start    Start proxy without opening Herdr' \
+      'home-herdr start    Keep proxy running without opening Herdr' \
       'home-herdr stop     Stop proxy; keep identity and home sessions' \
-      'home-herdr status   Show proxy/container status' \
+      'home-herdr build    Rebuild the image after updating Dockerfile' \
+      'home-herdr status   Show Home window and proxy state' \
       'home-herdr logs     Show recent proxy logs (may contain private metadata)'
     ;;
   *)

@@ -14,7 +14,7 @@ does not get a connection back to your local Herdr, files, or SSH agent.
 
 - macOS with Docker Desktop and Docker Compose
 - Herdr locally and on the remote Mac (Herdr can offer remote installation)
-- Python 3, the 1Password CLI (`op`), and an enabled 1Password SSH agent
+- Bun, the 1Password CLI (`op`), and an enabled 1Password SSH agent
 - A remote Mac in your tailnet with SSH/Remote Login enabled and your key authorized
 - Ghostty for the dedicated themed window; any terminal works for `remote`
 
@@ -34,6 +34,10 @@ printf 'function home-herdr\n    "%s/home-herdr" $argv\nend\n' "$PWD" > ~/.confi
 ```
 
 The examples below use that function. Without it, use `./home-herdr`.
+
+The helper scripts are Bun/TypeScript with no third-party packages. The small
+Bash entry point uses macOS's built-in `lockf` to serialize window launches.
+Existing SSH settings and `config.json` are retained across helper updates.
 
 ## Configure once
 
@@ -118,20 +122,32 @@ connections initiated locally still work.
 ## Daily use
 
 ```fish
-home-herdr window
+home-herdr
 ```
 
-Opens a separate Ghostty instance with a fixed **HOME — remote** title and
-Rose Pine colors in Ghostty and Herdr. It attaches only to the remote server,
-not your local work panes. Your normal Ghostty/Herdr configs are unchanged.
+Opens the dedicated Ghostty Home window if it is closed, or brings the existing
+one to the front. `home-herdr window` is an alias for the same action. Repeated
+calls do not create duplicate windows or restart the proxy. Concurrent launches
+are serialized with a local lock; no stale PID file is used.
 
-The local Herdr profile uses **Ctrl-space** as its prefix, matching the included
-Ghostty shortcut assumption. Detach with **Ctrl-space, then q**. The proxy stops;
-remote panes and agents keep running. Closing the window also triggers cleanup.
+The window has a fixed **HOME — remote** title and Rose Pine colors in Ghostty
+and Herdr. It attaches only to the remote server, not local work panes. Pane
+identity inherited from a calling Herdr session is cleared only for the new
+terminal instance; nested Herdr is never enabled. The helper does not modify
+normal Ghostty/Herdr configuration.
+
+The home profile has its own shortcuts: Cmd-T creates a Herdr tab, Cmd-D and
+Cmd-Shift-D split panes, and Cmd-1…9 switch tabs. **Cmd-W closes the Ghostty
+surface**, detaching rather than killing a remote pane or agent.
+
+Detach with **Ctrl-space, then q**, or close the window. If this client started
+the proxy, it stops it on exit; a proxy already running from an earlier `start`
+or `login` is left running. Remote panes and agents always keep running.
 
 After the command exits, Ghostty retains its output until a keypress, so startup
-errors do not vanish. Successful detach also leaves the final output visible
-until you press a key. Closing this instance does not quit your normal Ghostty.
+errors do not vanish. An existing error window is focused rather than hidden by
+a duplicate: press a key to close it, fix the issue, then run `home-herdr` again.
+Closing this instance does not quit your normal Ghostty.
 
 To attach in the current terminal:
 
@@ -143,11 +159,13 @@ Other commands:
 
 | Command | Behavior |
 | --- | --- |
-| `home-herdr` | Start proxy, open local Herdr, stop proxy on detach |
+| `home-herdr` / `home-herdr window` | Open or focus the dedicated Home window |
+| `home-herdr run` | Open local Herdr with the shared Home sidebar |
 | `home-herdr setup` | Save the remote host as Home in the local Herdr sidebar |
 | `home-herdr start` | Start proxy without opening Herdr |
 | `home-herdr stop` | Stop proxy, preserving its identity |
-| `home-herdr status` | Show container and tailnet status |
+| `home-herdr status` | Show Home window and proxy state, including when stopped |
+| `home-herdr build` | Explicitly rebuild the proxy image |
 | `home-herdr logs` | Show recent container logs |
 | `home-herdr config` | Configure SSH and select a 1Password key |
 | `home-herdr login` | Authenticate/re-authenticate the proxy |
@@ -155,11 +173,28 @@ Other commands:
 For an already-open local Herdr, run `setup` once, use `start`, select Home
 in its sidebar, and use `stop` when finished.
 
-Use one proxy-owning client at a time. Exiting `remote` or the default launcher
-stops the shared proxy and disconnects other clients using it. For multiple
-clients, manage the proxy with `start`/`stop` and launch Herdr separately.
-A forced kill cannot run cleanup; use `stop` afterward. Docker Desktop itself
-is never stopped globally.
+Startup reuses a running container. It builds the image only if missing; after
+changing Dockerfile or its Tailscale version, use `home-herdr build` and restart
+the proxy to use the new image.
+
+Use one automatically managed client at a time. The client that originally
+started the proxy owns its shutdown; another inline client can reuse it but will
+lose its connection if that owner exits. Calling `start` after that owner is
+already attached does not transfer ownership. For multiple clients, run `start`
+before attaching and manage shutdown with `stop`. A forced kill cannot run
+cleanup; use `stop` afterward. Docker Desktop itself is never stopped globally.
+
+### Plain normal terminal, Home multiplexer
+
+If your normal Ghostty starts Herdr automatically, change its `command` to a
+plain login shell, for example `command = /opt/homebrew/bin/fish -l` (use your
+actual fish path). Remove normal-window keybindings that send Herdr prefixes;
+the Home profile contains its own. Reload Ghostty configuration before opening
+new normal windows. Existing Herdr servers and panes do not need to be stopped.
+
+`remote` and `run` require a plain terminal. Invoked from a Herdr pane, they fail
+before starting Docker and direct you to `home-herdr`, which opens a genuinely
+separate terminal instead of nesting.
 
 ## Troubleshooting
 
@@ -182,9 +217,12 @@ and `logs`.
 remote Mac and the 1Password agent offers it. Verify plain
 `ssh home-herdr` before debugging Herdr.
 
-**Wrong shortcuts:** `herdr-home.toml` sets a Ctrl-space prefix. Ghostty inherits
-your normal shortcuts; if those send another prefix, align the two configs.
-The project does not modify your normal terminal configuration.
+**Nested Herdr:** run `home-herdr` for a separate window, not `remote` inside a
+Herdr pane. No nesting option is enabled.
+
+**Wrong shortcuts:** `herdr-home.toml` sets a Ctrl-space prefix and
+`ghostty-home.conf` supplies matching Home-only shortcuts. Keep those profiles
+aligned. The project does not modify normal-window bindings.
 
 ## Security boundary
 
@@ -252,6 +290,7 @@ the checkout:
 | Private SSH key | 1Password |
 | Public key, SSH host block, backups | `~/.ssh/` |
 | 1Password account/item preferences | `~/.config/home-herdr/config.json` |
+| Window-launch lock (no credentials) | `~/.config/home-herdr/window.lock` |
 | Tailscale identity and authentication | Docker `tailscale-state` volume |
 | Runtime logs | Docker / Herdr / terminal scrollback |
 
@@ -266,18 +305,21 @@ then delete local state with `docker compose down -v`.
 ## Verification
 
 The scratch image builds and its non-root daemon runs under the hardened Compose
-settings. Startup was exercised through `home-herdr window`: it reconnects,
-reaches the remote SSH port, and retains the themed window and failure output
-when strict host-key checking refuses an unverified server. macOS `nc` was also
-checked to send destination names through SOCKS5 rather than resolving locally.
-Authenticated remote Herdr attachment and remote-to-proxy denial remain unverified.
+settings. The default `home-herdr` command was exercised on macOS: it opens the
+remote session, a second invocation focuses the same Ghostty instance, and an
+already-running proxy is reused without a rebuild. Authenticated remote Herdr
+attachment and the separate normal fish window were verified visually. Startup
+failure output was also checked to stay visible. macOS `nc` sends destination
+names through SOCKS5 rather than resolving locally.
+
+Remote-to-proxy denial still requires verification in your own tailnet.
 
 Basic checks:
 
 ```sh
 bash -n home-herdr
 docker compose config --quiet
-python3 -B -m unittest discover -s tests
+bun test
 ```
 
 CI runs shell syntax checks, configuration-validation tests, Compose validation,
