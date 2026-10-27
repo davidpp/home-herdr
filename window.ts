@@ -27,9 +27,10 @@ export function launchArgs(project: string, env: NodeJS.ProcessEnv): string[] {
   // A new terminal isn't a nested pane. Clear the calling pane's identity only
   // for this instance, and preserve PATH for Bun installed through mise/Homebrew.
   const paneVars = [...new Set(["HERDR_ENV", ...Object.keys(env).filter(key => key.startsWith("HERDR_"))])].sort();
-  const environmentArgs = paneVars.flatMap(key => ["--env", key]);
+  // open --env KEY sets an empty string; Herdr treats that as a socket override.
+  const unsetArgs = paneVars.flatMap(key => ["-u", key]);
   const launcher = join(project, "home-herdr").replace(/'/g, "'\\''");
-  return ["/usr/bin/open", "-na", GHOSTTY, "--env", `PATH=${env.PATH || ""}`, ...environmentArgs, "--args",
+  return ["/usr/bin/env", ...unsetArgs, "/usr/bin/open", "-na", GHOSTTY, "--env", `PATH=${env.PATH || ""}`, "--args",
     `--config-file=${join(project, "ghostty-home.conf")}`, `--command=/bin/bash '${launcher}' remote`];
 }
 

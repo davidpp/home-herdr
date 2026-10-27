@@ -31,9 +31,19 @@ test("ignores malformed process-list entries", () => {
 
 test("launches a separate surface with no inherited pane identity and preserves Bun's PATH", () => {
   const args = launchArgs("/tmp/home helper", { PATH: "/custom/bun/bin", HERDR_ENV: "1", HERDR_PANE_ID: "pane" });
+  expect(args.slice(0, 6)).toEqual(["/usr/bin/env", "-u", "HERDR_ENV", "-u", "HERDR_PANE_ID", "/usr/bin/open"]);
   expect(args).toContain("PATH=/custom/bun/bin");
-  expect(args).toContain("HERDR_ENV");
-  expect(args).toContain("HERDR_PANE_ID");
-  expect(args).not.toContain("HERDR_ENV=1");
+  expect(args.filter((arg, index) => args[index - 1] === "--env")).toEqual(["PATH=/custom/bun/bin"]);
   expect(args).toContain("--command=/bin/bash '/tmp/home helper/home-herdr' remote");
+});
+
+test("unsets empty and populated Herdr variables rather than exporting empty socket paths", () => {
+  const env = { ...process.env, HERDR_ENV: "1", HERDR_SOCKET_PATH: "", HERDR_PANE_ID: "pane", HERDR_CUSTOM: "value", KEEP_ME: "kept" };
+  const args = launchArgs("/tmp/home helper", env);
+  const prefix = args.slice(0, args.indexOf("/usr/bin/open"));
+  const result = Bun.spawnSync([...prefix, process.execPath, "-e",
+    'console.log(JSON.stringify({herdr: Object.keys(process.env).filter(key => key.startsWith("HERDR_")), kept: process.env.KEEP_ME}))'],
+    { env, stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout.toString())).toEqual({ herdr: [], kept: "kept" });
 });

@@ -243,6 +243,14 @@ separate terminal instead of nesting.
 
 ## Troubleshooting
 
+**Herdr reports `Invalid argument` (OS error 22):** an exported but empty
+`HERDR_SOCKET_PATH` is an invalid socket override. The window launcher unsets
+inherited `HERDR_*` variables with `env -u`; macOS `open --env NAME` would
+instead export an empty string. Older Ghostty instances retain their launch
+environment, so restart the affected instance after updating. Until then, use
+`env -u HERDR_SOCKET_PATH herdr` in a plain terminal. No Herdr server restart is
+needed.
+
 **Window disappears:** the included Ghostty profile sets
 `wait-after-command = true`. Run `home-herdr remote` from an existing terminal
 to inspect errors independently of Ghostty.
